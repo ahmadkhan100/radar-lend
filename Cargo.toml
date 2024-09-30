@@ -3,6 +3,7 @@ name = "radar-lend"
 version = "0.1.0"
 edition = "2021"
 description = "A Solana program for deposits, withdrawals, and USDC loans with SOL collateral"
+license = "MIT"
 
 [features]
 no-entrypoint = []
