@@ -7,23 +7,44 @@ use solana_program::{
     pubkey::Pubkey,
     rent::Rent,
     sysvar::Sysvar,
-    program::{invoke, invoke_signed},
-    system_instruction,
 };
 use borsh::{BorshDeserialize, BorshSerialize};
+use thiserror::Error;
 
 // Define the program ID
 solana_program::declare_id!("Your_Program_ID_Here");
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
 pub struct UserAccount {
+    pub owner: Pubkey,
     pub balance: u64,
 }
 
 #[derive(BorshSerialize, BorshDeserialize, Debug)]
-pub enum ShrubFinanceInstruction {
+pub enum DepositInstruction {
+    InitializeAccount,
     Deposit { amount: u64 },
-    Withdraw { amount: u64 },
+}
+
+#[derive(Error, Debug)]
+pub enum DepositError {
+    #[error("Invalid instruction")]
+    InvalidInstruction,
+
+    #[error("Not rent exempt")]
+    NotRentExempt,
+
+    #[error("Expected amount to be greater than zero")]
+    AmountMustBeGreaterThanZero,
+
+    #[error("Deposit overflow")]
+    Overflow,
+}
+
+impl From<DepositError> for ProgramError {
+    fn from(e: DepositError) -> Self {
+        ProgramError::Custom(e as u32)
+    }
 }
 
 entrypoint!(process_instruction);
@@ -33,218 +54,183 @@ pub fn process_instruction(
     accounts: &[AccountInfo],
     instruction_data: &[u8],
 ) -> ProgramResult {
-    let instruction = ShrubFinanceInstruction::try_from_slice(instruction_data)
-        .map_err(|_| ProgramError::InvalidInstructionData)?;
+    let instruction = DepositInstruction::try_from_slice(instruction_data)
+        .map_err(|_| DepositError::InvalidInstruction)?;
 
     match instruction {
-        ShrubFinanceInstruction::Deposit { amount } => {
-            msg!("Instruction: Deposit");
-            deposit(program_id, accounts, amount)
-        }
-        ShrubFinanceInstruction::Withdraw { amount } => {
-            msg!("Instruction: Withdraw");
-            withdraw(program_id, accounts, amount)
-        }
+        DepositInstruction::InitializeAccount => initialize_account(program_id, accounts),
+        DepositInstruction::Deposit { amount } => deposit(accounts, amount),
     }
 }
 
-fn deposit(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> ProgramResult {
+fn initialize_account(program_id: &Pubkey, accounts: &[AccountInfo]) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
-
     let user_account = next_account_info(account_info_iter)?;
-    let user_wallet = next_account_info(account_info_iter)?;
-    let system_program = next_account_info(account_info_iter)?;
+    let user = next_account_info(account_info_iter)?;
+    let rent = &Rent::from_account_info(next_account_info(account_info_iter)?)?;
 
-    if !user_wallet.is_signer {
-        msg!("Error: User wallet must be a signer");
-        return Err(ProgramError::MissingRequiredSignature);
+    if !rent.is_exempt(user_account.lamports(), user_account.data_len()) {
+        return Err(DepositError::NotRentExempt.into());
     }
 
     if user_account.owner != program_id {
-        msg!("Error: User account must be owned by the program");
         return Err(ProgramError::IncorrectProgramId);
     }
 
-    if amount == 0 {
-        msg!("Error: Deposit amount must be greater than zero");
-        return Err(ProgramError::InvalidInstructionData);
+    if !user.is_signer {
+        return Err(ProgramError::MissingRequiredSignature);
     }
 
-    let rent = Rent::get()?;
-    let required_lamports = rent.minimum_balance(std::mem::size_of::<UserAccount>());
+    let mut account_data = UserAccount::try_from_slice(&user_account.data.borrow())?;
+    account_data.owner = *user.key;
+    account_data.balance = 0;
+    account_data.serialize(&mut &mut user_account.data.borrow_mut()[..])?;
 
-    if user_account.lamports() < required_lamports {
-        msg!("Initializing user account");
-        let lamports_to_transfer = required_lamports - user_account.lamports();
-        invoke(
-            &system_instruction::transfer(user_wallet.key, user_account.key, lamports_to_transfer),
-            &[user_wallet.clone(), user_account.clone(), system_program.clone()],
-        )?;
-    }
-
-    let mut user_data = if user_account.data_len() > 0 {
-        UserAccount::try_from_slice(&user_account.data.borrow())?
-    } else {
-        UserAccount { balance: 0 }
-    };
-
-    user_data.balance = user_data.balance.checked_add(amount)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
-    user_data.serialize(&mut &mut user_account.data.borrow_mut()[..])?;
-
-    invoke(
-        &system_instruction::transfer(user_wallet.key, user_account.key, amount),
-        &[user_wallet.clone(), user_account.clone(), system_program.clone()],
-    )?;
-
-    msg!("Deposited {} lamports", amount);
-    msg!("New balance: {} lamports", user_data.balance);
+    msg!("Account initialized");
     Ok(())
 }
 
-fn withdraw(program_id: &Pubkey, accounts: &[AccountInfo], amount: u64) -> ProgramResult {
+fn deposit(accounts: &[AccountInfo], amount: u64) -> ProgramResult {
     let account_info_iter = &mut accounts.iter();
-
     let user_account = next_account_info(account_info_iter)?;
-    let user_wallet = next_account_info(account_info_iter)?;
+    let user = next_account_info(account_info_iter)?;
 
-    if !user_wallet.is_signer {
-        msg!("Error: User wallet must be a signer");
+    if amount == 0 {
+        return Err(DepositError::AmountMustBeGreaterThanZero.into());
+    }
+
+    if !user.is_signer {
         return Err(ProgramError::MissingRequiredSignature);
     }
 
-    if user_account.owner != program_id {
-        msg!("Error: User account must be owned by the program");
-        return Err(ProgramError::IncorrectProgramId);
+    let mut account_data = UserAccount::try_from_slice(&user_account.data.borrow())?;
+
+    if account_data.owner != *user.key {
+        return Err(ProgramError::InvalidAccountData);
     }
 
-    if amount == 0 {
-        msg!("Error: Withdrawal amount must be greater than zero");
-        return Err(ProgramError::InvalidInstructionData);
-    }
+    account_data.balance = account_data.balance.checked_add(amount)
+        .ok_or(DepositError::Overflow)?;
 
-    let mut user_data = UserAccount::try_from_slice(&user_account.data.borrow())?;
-    if user_data.balance < amount {
-        msg!("Error: Insufficient funds for withdrawal");
-        return Err(ProgramError::InsufficientFunds);
-    }
+    account_data.serialize(&mut &mut user_account.data.borrow_mut()[..])?;
 
-    user_data.balance = user_data.balance.checked_sub(amount)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
-    user_data.serialize(&mut &mut user_account.data.borrow_mut()[..])?;
+    **user.try_borrow_mut_lamports()? = user.lamports()
+        .checked_sub(amount)
+        .ok_or(ProgramError::InsufficientFunds)?;
 
     **user_account.try_borrow_mut_lamports()? = user_account.lamports()
-        .checked_sub(amount)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
-
-    **user_wallet.try_borrow_mut_lamports()? = user_wallet.lamports()
         .checked_add(amount)
-        .ok_or(ProgramError::ArithmeticOverflow)?;
+        .ok_or(DepositError::Overflow)?;
 
-    msg!("Withdrawn {} lamports", amount);
-    msg!("New balance: {} lamports", user_data.balance);
+    msg!("Deposit successful: {} lamports", amount);
     Ok(())
 }
 
-// This is not necessary for the main.rs file, but if you want to include tests in the same file:
 #[cfg(test)]
 mod tests {
     use super::*;
     use solana_program::clock::Epoch;
     use std::mem;
 
-    // Helper function to create AccountInfo for testing
-    fn create_account_info<'a>(
-        key: &'a Pubkey,
-        is_signer: bool,
-        lamports: &'a mut u64,
-        data: &'a mut [u8],
-        owner: &'a Pubkey,
-    ) -> AccountInfo<'a> {
-        AccountInfo::new(
-            key,
-            is_signer,
+    #[test]
+    fn test_initialize_account() {
+        let program_id = Pubkey::new_unique();
+        let user_key = Pubkey::new_unique();
+        let mut lamports = 100000;
+        let mut data = vec![0; mem::size_of::<UserAccount>()];
+        let owner = program_id;
+
+        let user_account = AccountInfo::new(
+            &user_key,
             false,
-            lamports,
-            data,
-            owner,
+            true,
+            &mut lamports,
+            &mut data,
+            &owner,
             false,
             Epoch::default(),
-        )
+        );
+
+        let user = AccountInfo::new(
+            &user_key,
+            true,
+            false,
+            &mut lamports,
+            &mut [],
+            &owner,
+            false,
+            Epoch::default(),
+        );
+
+        let mut rent_lamports = 0;
+        let rent_data = vec![0; mem::size_of::<Rent>()];
+        let rent = AccountInfo::new(
+            &Pubkey::new_unique(),
+            false,
+            false,
+            &mut rent_lamports,
+            &rent_data,
+            &Pubkey::new_unique(),
+            false,
+            Epoch::default(),
+        );
+
+        let accounts = vec![user_account, user, rent];
+
+        let result = initialize_account(&program_id, &accounts);
+        assert!(result.is_ok());
+
+        let account_data = UserAccount::try_from_slice(&accounts[0].data.borrow()).unwrap();
+        assert_eq!(account_data.owner, user_key);
+        assert_eq!(account_data.balance, 0);
     }
 
     #[test]
     fn test_deposit() {
         let program_id = Pubkey::new_unique();
-        let user_wallet_key = Pubkey::new_unique();
-        let user_account_key = Pubkey::new_unique();
-        let system_program_key = Pubkey::new_unique();
+        let user_key = Pubkey::new_unique();
+        let mut user_lamports = 100000;
+        let mut account_lamports = 0;
+        let mut data = vec![0; mem::size_of::<UserAccount>()];
+        let owner = program_id;
 
-        let mut user_wallet_lamports = 5_000_000_000; // 5 SOL
-        let mut user_account_lamports = 0;
-        let mut user_account_data = vec![0; mem::size_of::<UserAccount>()];
-
-        let mut user_wallet_account = create_account_info(
-            &user_wallet_key, true, &mut user_wallet_lamports, &mut [], &system_program_key
+        let user_account = AccountInfo::new(
+            &user_key,
+            false,
+            true,
+            &mut account_lamports,
+            &mut data,
+            &owner,
+            false,
+            Epoch::default(),
         );
-        let mut user_account = create_account_info(
-            &user_account_key, false, &mut user_account_lamports, &mut user_account_data, &program_id
+
+        let user = AccountInfo::new(
+            &user_key,
+            true,
+            false,
+            &mut user_lamports,
+            &mut [],
+            &owner,
+            false,
+            Epoch::default(),
         );
-        let system_program_account = create_account_info(
-            &system_program_key, false, &mut 0, &mut [], &system_program_key
-        );
 
-        let accounts = vec![
-            user_account,
-            user_wallet_account,
-            system_program_account,
-        ];
+        let mut account_data = UserAccount {
+            owner: user_key,
+            balance: 0,
+        };
+        account_data.serialize(&mut &mut user_account.data.borrow_mut()[..]).unwrap();
 
-        let deposit_amount = 1_000_000_000; // 1 SOL
-        let instruction_data = ShrubFinanceInstruction::Deposit { amount: deposit_amount }
-            .try_to_vec()
-            .unwrap();
+        let accounts = vec![user_account, user];
 
-        let result = process_instruction(&program_id, &accounts, &instruction_data);
+        let deposit_amount = 50000;
+        let result = deposit(&accounts, deposit_amount);
         assert!(result.is_ok());
 
-        let user_data = UserAccount::try_from_slice(&accounts[0].data.borrow()).unwrap();
-        assert_eq!(user_data.balance, deposit_amount);
-    }
-
-    #[test]
-    fn test_withdraw() {
-        let program_id = Pubkey::new_unique();
-        let user_wallet_key = Pubkey::new_unique();
-        let user_account_key = Pubkey::new_unique();
-
-        let mut user_wallet_lamports = 1_000_000_000; // 1 SOL
-        let mut user_account_lamports = 2_000_000_000; // 2 SOL
-        let mut user_account_data = UserAccount { balance: 2_000_000_000 }.try_to_vec().unwrap();
-
-        let mut user_wallet_account = create_account_info(
-            &user_wallet_key, true, &mut user_wallet_lamports, &mut [], &system_program::id()
-        );
-        let mut user_account = create_account_info(
-            &user_account_key, false, &mut user_account_lamports, &mut user_account_data, &program_id
-        );
-
-        let accounts = vec![
-            user_account,
-            user_wallet_account,
-        ];
-
-        let withdraw_amount = 1_000_000_000; // 1 SOL
-        let instruction_data = ShrubFinanceInstruction::Withdraw { amount: withdraw_amount }
-            .try_to_vec()
-            .unwrap();
-
-        let result = process_instruction(&program_id, &accounts, &instruction_data);
-        assert!(result.is_ok());
-
-        let user_data = UserAccount::try_from_slice(&accounts[0].data.borrow()).unwrap();
-        assert_eq!(user_data.balance, 1_000_000_000); // 2 SOL - 1 SOL = 1 SOL
+        let updated_account_data = UserAccount::try_from_slice(&accounts[0].data.borrow()).unwrap();
+        assert_eq!(updated_account_data.balance, deposit_amount);
+        assert_eq!(accounts[0].lamports(), deposit_amount);
+        assert_eq!(accounts[1].lamports(), 50000);
     }
 }
