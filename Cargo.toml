@@ -2,11 +2,20 @@
 name = "radar-lend"
 version = "0.1.0"
 edition = "2021"
+description = "A Solana program for deposits, withdrawals, and USDC loans with SOL collateral"
+
+[features]
+no-entrypoint = []
 
 [dependencies]
 solana-program = "1.16"
-borsh = "0.10"
 thiserror = "1.0"
+spl-token = { version = "4.0", features = ["no-entrypoint"] }
+borsh = "0.10"
+borsh-derive = "0.10"
+num-derive = "0.3"
+num-traits = "0.2"
+arrayref = "0.3.6"
 
 [dev-dependencies]
 solana-program-test = "1.16"
@@ -22,5 +31,9 @@ name = "radar-lend-deposit"
 path = "src/main_deposit.rs"
 
 [[bin]]
-name = "radar-lend-withdraw"
+name = "radar-lend-deposit-withdraw"
 path = "src/main_deposit_withdraw.rs"
+
+[[bin]]
+name = "radar-lend-usdc-sol-collateral"
+path = "src/main_usdc_sol_collateral.rs"
