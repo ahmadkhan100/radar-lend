@@ -1,154 +1,139 @@
 use anchor_lang::prelude::*;
-use std::io::{self, Write, StdoutLock, StderrLock};
+use anchor_client::{
+    solana_sdk::{
+        signature::{Keypair, Signer},
+        transaction::Transaction,
+    },
+    Client, Cluster,
+};
+use std::str::FromStr;
 
 declare_id!("27EvSTnpN61RPkypusJM3yk2a9qA1utPsgNfpwhpYFBw");
 
 #[program]
-pub mod deposit_withdraw {
+pub mod solana_vault {
     use super::*;
-    pub fn initialize(ctx: Context<Initialize>, nonce: u8) -> ProgramResult {
-
-        let pool = &mut ctx.accounts.pool;
-        pool.authority = ctx.accounts.authority.key();
-        pool.vault = ctx.accounts.vault.key();
-        pool.nonce = nonce;
-
+    pub fn initialize(ctx: Context<Initialize>) -> ProgramResult {
+        let vault = &mut ctx.accounts.vault;
+        vault.authority = ctx.accounts.authority.key();
+        vault.balance = 0;
         Ok(())
     }
 
-    pub fn deposit(ctx: Context<Deposit>, amount: u64) -> ProgramResult {
-
-        let ix = anchor_lang::solana_program::system_instruction::transfer(
-                                    &ctx.accounts.depositor.key(), 
-                                    &ctx.accounts.vault.key(), 
-                                    amount);
-
-        anchor_lang::solana_program::program::invoke(&ix, &[
-                                                                ctx.accounts.depositor.to_account_info(), 
-                                                                ctx.accounts.vault.to_account_info(), 
-                                                            ])?;
-
-        
-                
-
-        Ok(())
-    }
-
-    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> ProgramResult {
-        let seeds = &[
-            ctx.accounts.pool.to_account_info().key.as_ref(),
-            &[ctx.accounts.pool.nonce],
-        ];
-        let signer = &[&seeds[..]];
-        let lamports = ctx.accounts.vault.to_account_info().lamports();
-
-        if amount > lamports {
-            return Err(ErrorCode::NotEnoughPoolAmount.into());
+    pub fn deposit(ctx: Context<Transact>, amount: u64) -> ProgramResult {
+        let vault = &mut ctx.accounts.vault;
+        if **ctx.accounts.depositor.lamports.borrow() < amount {
+            return Err(ProgramError::InsufficientFunds);
         }
-
-        anchor_lang::solana_program::program::invoke_signed(
-            &anchor_lang::solana_program::system_instruction::transfer(
-                &ctx.accounts.vault.key(), 
-                &ctx.accounts.receiver.key(), 
-                amount
-            ),
-            &[
-                ctx.accounts.vault.to_account_info(),
-                ctx.accounts.receiver.to_account_info(),
-            ],
-            signer,
-        )?;
-
+        **ctx.accounts.depositor.try_borrow_mut_lamports()? -= amount;
+        **vault.to_account_info().try_borrow_mut_lamports()? += amount;
+        vault.balance += amount;
         Ok(())
     }
 
+    pub fn withdraw(ctx: Context<Transact>, amount: u64) -> ProgramResult {
+        let vault = &mut ctx.accounts.vault;
+        if vault.balance < amount {
+            return Err(ProgramError::InsufficientFunds);
+        }
+        **ctx.accounts.receiver.try_borrow_mut_lamports()? += amount;
+        **vault.to_account_info().try_borrow_mut_lamports()? -= amount;
+        vault.balance -= amount;
+        Ok(())
+    }
 }
 
 #[derive(Accounts)]
-#[instruction(nonce: u8)]
 pub struct Initialize<'info> {
-    authority: UncheckedAccount<'info>,
-
-    owner: Signer<'info>,
-    #[account(
-        seeds = [
-            pool.to_account_info().key.as_ref(),
-        ],
-        bump = nonce,
-    )]
-    pool_signer: UncheckedAccount<'info>,
-    #[account(
-        zero,
-    )]
-    pool: Box<Account<'info, Pool>>,
-    #[account(
-        mut,
-        seeds = [
-            pool.to_account_info().key.as_ref(),
-        ],
-        bump = nonce,
-    )]
-    vault: AccountInfo<'info>,
-
-    system_program: Program<'info, System>,
+    #[account(init, payer = authority, space = 8 + 40)]
+    pub vault: Account<'info, Vault>,
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
-pub struct Deposit<'info> {
-    #[account(
-        mut, 
-        has_one = vault,
-    )]
-    pool: Box<Account<'info, Pool>>,
+pub struct Transact<'info> {
+    #[account(mut, has_one = authority)]
+    pub vault: Account<'info, Vault>,
+    pub authority: Signer<'info>,
     #[account(mut)]
-    vault: AccountInfo<'info>,
-    #[account(
-        mut,
-    )]
-    depositor: AccountInfo<'info>,
-    #[account(
-        seeds = [
-            pool.to_account_info().key.as_ref(),
-        ],
-        bump = pool.nonce,
-    )]
-    pool_signer: UncheckedAccount<'info>,
-    system_program: Program<'info, System>,
-}
-
-#[derive(Accounts)]
-pub struct Withdraw<'info> {
-    #[account(
-        mut, 
-        has_one = vault,
-    )]
-    pool: Box<Account<'info, Pool>>,
+    pub depositor: AccountInfo<'info>,
     #[account(mut)]
-    vault: AccountInfo<'info>,
-    #[account(
-        mut,
-        constraint = pool.authority == receiver.key(),
-    )]
-    receiver: AccountInfo<'info>,
-    #[account(
-        seeds = [
-            pool.to_account_info().key.as_ref(),
-        ],
-        bump = pool.nonce,
-    )]
-    pool_signer: UncheckedAccount<'info>,
-    system_program: Program<'info, System>,
+    pub receiver: AccountInfo<'info>,
 }
 
 #[account]
-pub struct Pool {
+pub struct Vault {
     pub authority: Pubkey,
-    pub nonce: u8,
-    pub vault: Pubkey,
+    pub balance: u64,
 }
 
-#[error]
-pub enum ErrorCode {
-    #[msg("Pool amount is not enough.")]
-    NotEnoughPoolAmount,
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anchor_lang::solana_program::system_program;
+    use anchor_lang::ToAccountInfos;
+
+    #[test]
+    fn test_deposit_and_withdraw() {
+        let client = Client::new(Cluster::Devnet);
+        let payer = Keypair::new();
+        let vault_keypair = Keypair::new();
+        let depositor_keypair = Keypair::new();
+        let receiver_keypair = Keypair::new();
+
+        // Airdrop SOL to payer, depositor
+        let _ = client.request_airdrop(&payer.pubkey(), 1_000_000_000).unwrap();
+        let _ = client.request_airdrop(&depositor_keypair.pubkey(), 1_000_000_000).unwrap();
+
+        // Create and send transaction to initialize the vault
+        let mut transaction = Transaction::new_with_payer(
+            &[solana_vault::initialize(
+                ctx.accounts.initialize(
+                    vault_keypair.pubkey(),
+                    payer.pubkey(),
+                    system_program::id(),
+                ),
+                0, // Assuming space is correctly set in your actual program
+            )],
+            Some(&payer.pubkey()),
+        );
+        transaction.sign(&[&payer, &vault_keypair], client.get_recent_blockhash().unwrap());
+        client.send_and_confirm_transaction(&transaction).unwrap();
+
+        // Deposit to the vault
+        let mut transaction = Transaction::new_with_payer(
+            &[solana_vault::deposit(
+                ctx.accounts.transact(
+                    vault_keypair.pubkey(),
+                    payer.pubkey(),
+                    depositor_keypair.pubkey(),
+                    receiver_keypair.pubkey(),
+                ),
+                100, // Amount to deposit
+            )],
+            Some(&payer.pubkey()),
+        );
+        transaction.sign(&[&payer, &depositor_keypair], client.get_recent_blockhash().unwrap());
+        client.send_and_confirm_transaction(&transaction).unwrap();
+
+        // Withdraw from the vault
+        let mut transaction = Transaction::new_with_payer(
+            &[solana_vault::withdraw(
+                ctx.accounts.transact(
+                    vault_keypair.pubkey(),
+                    payer.pubkey(),
+                    depositor_keypair.pubkey(),
+                    receiver_keypair.pubkey(),
+                ),
+                50, // Amount to withdraw
+            )],
+            Some(&payer.pubkey()),
+        );
+        transaction.sign(&[&payer, &receiver_keypair], client.get_recent_blockhash().unwrap());
+        client.send_and_confirm_transaction(&transaction).unwrap();
+
+        // Assertions would go here, such as checking final balances, etc.
+    }
 }
