@@ -16,3 +16,6 @@ default = []
 
 [dependencies]
 anchor-lang = "0.18.2"
+getrandom = { version = "0.2", features = ["std"] }
+borsh = "0.9.1"
+

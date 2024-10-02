@@ -2,3 +2,9 @@
 members = [
     "programs/*"
 ]
+
+[profile.release]
+overflow-checks = true
+
+getrandom = { version = "0.2", features = ["std"] }
+

@@ -1,7 +1,7 @@
 const assert = require("assert");
 import * as anchor from '@project-serum/anchor';
 import { Program } from '@project-serum/anchor';
-import { DepositWithdraw } from '../target/types/deposit_withdraw';
+import { DepositWithdraw as DepositWithdrawType} from '../target/types/deposit_withdraw';
 
 describe('deposit-withdraw', () => {
 
