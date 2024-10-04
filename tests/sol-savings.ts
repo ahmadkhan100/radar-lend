@@ -1,7 +1,7 @@
 import * as anchor from '@project-serum/anchor';
 import { Program } from '@project-serum/anchor';
 import { PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { TOKEN_PROGRAM_ID, createMint, getOrCreateAssociatedTokenAccount, mintTo} from '@solana/spl-token';
+import { TOKEN_PROGRAM_ID, createMint, getOrCreateAssociatedTokenAccount, mintTo, getAccount } from '@solana/spl-token';
 import { expect } from 'chai';
 
 describe('sol-savings', () => {
@@ -11,7 +11,7 @@ describe('sol-savings', () => {
   const program = anchor.workspace.SolSavings as Program<any>;
   const owner = Keypair.generate();
   let userAccount: Keypair;
-  let usdcMint: Token;
+  let usdcMint: PublicKey;
   let userUsdcAccount: PublicKey;
   let contractUsdcAccount: PublicKey;
 
@@ -20,20 +20,31 @@ describe('sol-savings', () => {
     await provider.connection.requestAirdrop(owner.publicKey, 10 * LAMPORTS_PER_SOL);
 
     // Create USDC mint
-    usdcMint = await Token.createMint(
+    usdcMint = await createMint(
       provider.connection,
       owner,
       owner.publicKey,
       null,
-      6,
-      TOKEN_PROGRAM_ID
+      6
     );
 
     // Create user USDC account
-    userUsdcAccount = await usdcMint.createAccount(owner.publicKey);
+    const userUsdcAcc = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      owner,
+      usdcMint,
+      owner.publicKey
+    );
+    userUsdcAccount = userUsdcAcc.address;
 
     // Create contract USDC account
-    contractUsdcAccount = await usdcMint.createAccount(program.programId);
+    const contractUsdcAcc = await getOrCreateAssociatedTokenAccount(
+      provider.connection,
+      owner,
+      usdcMint,
+      program.programId
+    );
+    contractUsdcAccount = contractUsdcAcc.address;
   });
 
   it('Initializes user account', async () => {
@@ -66,7 +77,7 @@ describe('sol-savings', () => {
         contract: program.programId,
         contractUsdcAccount: contractUsdcAccount,
         userUsdcAccount: userUsdcAccount,
-        usdcMint: usdcMint.publicKey,
+        usdcMint: usdcMint,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
@@ -91,7 +102,7 @@ describe('sol-savings', () => {
         contract: program.programId,
         contractUsdcAccount: contractUsdcAccount,
         userUsdcAccount: userUsdcAccount,
-        usdcMint: usdcMint.publicKey,
+        usdcMint: usdcMint,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       })
