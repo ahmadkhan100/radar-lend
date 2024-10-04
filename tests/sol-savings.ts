@@ -58,7 +58,10 @@ describe('sol-savings', () => {
       .signers([owner, userAccount])
       .rpc();
 
+    // Fetch the account details
     const account = await program.account.userAccount.fetch(userAccount.publicKey);
+
+    // Assertions using CamelCase field names
     expect(account.owner.toString()).to.equal(owner.publicKey.toString());
     expect(account.solBalance.toNumber()).to.equal(0);
     expect(account.usdcBalance.toNumber()).to.equal(0);
@@ -85,6 +88,8 @@ describe('sol-savings', () => {
       .rpc();
 
     const account = await program.account.userAccount.fetch(userAccount.publicKey);
+    
+    // Assertions using CamelCase field names
     expect(account.solBalance.toNumber()).to.be.greaterThan(0);
     expect(account.usdcBalance.toNumber()).to.equal(usdcAmount.toNumber());
     expect(account.loanCount.toNumber()).to.equal(1);
@@ -110,6 +115,8 @@ describe('sol-savings', () => {
       .rpc();
 
     const account = await program.account.userAccount.fetch(userAccount.publicKey);
+
+    // Check if USDC balance and loan principal have decreased
     expect(account.usdcBalance.toNumber()).to.be.lessThan(50 * 10**6);
     expect(account.loans[0].principal.toNumber()).to.be.lessThan(50 * 10**6);
   });
@@ -126,6 +133,8 @@ describe('sol-savings', () => {
       .rpc();
 
     const account = await program.account.userAccount.fetch(userAccount.publicKey);
+
+    // Check if SOL balance has decreased
     expect(account.solBalance.toNumber()).to.be.lessThan(1 * LAMPORTS_PER_SOL);
   });
 });
