@@ -15,9 +15,12 @@ sol_savings = "3e4U8VDi5ctePpTNErDURm24g5G2Rj9kWGLVco6Rx1ex"
 [registry]
 url = "https://anchor.projectserum.com" # Default Anchor registry
 
+#[provider]
+#cluster = "localnet"
+#wallet = "/Users/ahmadkhan/.config/solana/id.json"
 [provider]
-cluster = "localnet"
-wallet = "/Users/ahmadkhan/.config/solana/id.json"
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
 
 [scripts]
 test = "yarn test"
