@@ -1,7 +1,6 @@
 [features]
 seeds = false
 skip-lint = false
-idl-build = ["anchor-spl/idl-build"]
 
 [programs.localnet]
 sol_savings = "HamacCCe7hLEBqMKcRebMCTdATkQSUtRpE2xkHc236gZ"
@@ -13,17 +12,20 @@ sol_savings = "HamacCCe7hLEBqMKcRebMCTdATkQSUtRpE2xkHc236gZ"
 sol_savings = "HamacCCe7hLEBqMKcRebMCTdATkQSUtRpE2xkHc236gZ"
 
 [registry]
-url = "https://anchor.projectserum.com" # Default Anchor registry
+url = "https://api.apr.dev"
 
 [provider]
 cluster = "devnet"
-wallet = "~/Users/ahmadkhan/.config/solana/id.json"
+wallet = "~/.config/solana/id.json"
 
 [scripts]
-test = "yarn ts-mocha -p tsconfig.json tests/**/*.ts"
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
 
 [test]
 startup_wait = 5000
+
+[test.validator]
+url = "https://api.devnet.solana.com"
 
 [workspace]
 types = "target/types/sol_savings"
