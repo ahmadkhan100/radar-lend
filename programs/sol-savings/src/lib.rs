@@ -3,7 +3,7 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount};
 use anchor_spl::associated_token::AssociatedToken;
 use chainlink_solana as chainlink;
 
-declare_id!("3e4U8VDi5ctePpTNErDURm24g5G2Rj9kWGLVco6Rx1ex");
+declare_id!("HamacCCe7hLEBqMKcRebMCTdATkQSUtRpE2xkHc236gZ");
 
 const INITIAL_USDC_SUPPLY: u64 = 1_000_000_000_000; // 1,000,000 USDC (6 decimals)
 const SECONDS_IN_A_YEAR: u64 = 31_536_000; // 365 days in seconds
@@ -24,7 +24,6 @@ pub mod sol_savings_with_chainlink {
 
     pub fn withdraw_sol(ctx: Context<WithdrawSol>, amount: u64) -> Result<()> {
         let user_account = &mut ctx.accounts.user_account;
-        let owner = &ctx.accounts.owner;
 
         if user_account.sol_balance < amount {
             return Err(ErrorCode::InsufficientFunds.into());
@@ -32,7 +31,7 @@ pub mod sol_savings_with_chainlink {
 
         // Transfer SOL from program account to owner
         **user_account.to_account_info().try_borrow_mut_lamports()? -= amount;
-        **owner.to_account_info().try_borrow_mut_lamports()? += amount;
+        **ctx.accounts.owner.to_account_info().try_borrow_mut_lamports()? += amount;
 
         // Update the SOL balance
         user_account.sol_balance -= amount;
@@ -59,20 +58,19 @@ pub mod sol_savings_with_chainlink {
         ctx: Context<DepositSolAndTakeLoan>,
         sol_amount: u64,
         usdc_amount: u64,
-        ltv: u8
+        ltv: u8,
     ) -> Result<()> {
         let user_account = &mut ctx.accounts.user_account;
-        let owner = &ctx.accounts.owner;
 
         // Transfer SOL from owner to program account
         anchor_lang::solana_program::program::invoke(
             &anchor_lang::solana_program::system_instruction::transfer(
-                &owner.key(),
+                &ctx.accounts.owner.key(),
                 &user_account.key(),
                 sol_amount,
             ),
             &[
-                owner.to_account_info(),
+                ctx.accounts.owner.to_account_info(),
                 user_account.to_account_info(),
             ],
         )?;
