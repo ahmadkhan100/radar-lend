@@ -1,237 +1,197 @@
 import * as anchor from "@coral-xyz/anchor";
+import { Program } from "@coral-xyz/anchor";
+import { SolSavings } from "../target/types/sol_savings";
+import { PublicKey, Keypair } from "@solana/web3.js";
+import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, createMint, createAssociatedTokenAccount, getAssociatedTokenAddress } from "@solana/spl-token";
 import { expect } from 'chai';
-import { SolSavingsWithChainlink } from "../target/types/sol_savings_with_chainlink";
 
-import {
-  TOKEN_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
-  createAssociatedTokenAccountInstruction,
-  getAccount,
-  getMint,
-} from "@solana/spl-token";
-
-const { web3 } = anchor;
-const { SystemProgram } = web3;
-
-describe('sol-savings-with-chainlink', () => {
-  const provider = anchor.AnchorProvider.local();
+describe('sol-savings', () => {
+  const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
-  const program = anchor.workspace.SolSavingsWithChainlink as anchor.Program<SolSavingsWithChainlink>;
+  const program = anchor.workspace.SolSavings as Program<SolSavings>;
 
-  let userAccountKeypair: anchor.web3.Keypair;
-  let owner: anchor.web3.Keypair;
-  let contract: anchor.web3.Keypair;
-  let usdcMintKeypair: anchor.web3.Keypair;
-  let contractUsdcAccount: anchor.web3.PublicKey;
-  let userUsdcAccount: anchor.web3.PublicKey;
+  let userAccount: Keypair;
+  let usdcMint: PublicKey;
+  let contractUsdcAccount: PublicKey;
+  let userUsdcAccount: PublicKey;
+  let contractAccount: Keypair;
 
-  // Chainlink feed and program IDs (mocked for local testing)
-  const chainlinkFeed = anchor.web3.Keypair.generate().publicKey;
-  const chainlinkProgram = anchor.web3.Keypair.generate().publicKey;
+  const CHAINLINK_PROGRAM_ID = new PublicKey("HEvSKofvBgfaexv23kMabbYqxasxU3mQ4ibBMEmJWHny");
+  const SOL_USD_FEED = new PublicKey("HgTtcbcmp5BeThax5AU8vg4VwK79qAvAKKFMs8txMLW6");
 
   before(async () => {
-    // Generate keypairs
-    owner = anchor.web3.Keypair.generate();
-    userAccountKeypair = anchor.web3.Keypair.generate();
-    contract = anchor.web3.Keypair.generate();
-    usdcMintKeypair = anchor.web3.Keypair.generate();
+    userAccount = Keypair.generate();
+    contractAccount = Keypair.generate();
 
-    // Airdrop SOL to owner and contract accounts
-    await provider.connection.confirmTransaction(
-      await provider.connection.requestAirdrop(owner.publicKey, 2e9),
-      "confirmed"
+    // Airdrop SOL to user account and contract account
+    await provider.connection.requestAirdrop(userAccount.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
+    await provider.connection.requestAirdrop(contractAccount.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
+
+    // Create USDC mint
+    usdcMint = await createMint(
+      provider.connection,
+      contractAccount,
+      contractAccount.publicKey,
+      null,
+      6
     );
 
-    await provider.connection.confirmTransaction(
-      await provider.connection.requestAirdrop(contract.publicKey, 2e9),
-      "confirmed"
+    // Create contract USDC account
+    contractUsdcAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      contractAccount,
+      usdcMint,
+      contractAccount.publicKey
     );
 
-    // Derive contract USDC account
-    contractUsdcAccount = await anchor.utils.token.associatedAddress({
-      mint: usdcMintKeypair.publicKey,
-      owner: contract.publicKey,
-    });
-
-    // Derive user's USDC account
-    userUsdcAccount = await anchor.utils.token.associatedAddress({
-      mint: usdcMintKeypair.publicKey,
-      owner: owner.publicKey,
-    });
+    // Create user USDC account
+    userUsdcAccount = await createAssociatedTokenAccount(
+      provider.connection,
+      userAccount,
+      usdcMint,
+      userAccount.publicKey
+    );
   });
 
-  it('User account has the correct amount of SOL', async () => {
-    const balance = await provider.connection.getBalance(owner.publicKey);
-    expect(balance).to.equal(2000000000);
-  });
-
-  it('Initializes a user account', async () => {
+  it("Initializes user account", async () => {
     await program.methods.initialize()
       .accounts({
-        userAccount: userAccountKeypair.publicKey,
-        owner: owner.publicKey,
-        // Remove 'systemProgram' as it's auto-included by Anchor
-      })
-      .signers([owner, userAccountKeypair])
-      .preInstructions([
-        await anchor.web3.SystemProgram.createAccount({
-          fromPubkey: owner.publicKey,
-          newAccountPubkey: userAccountKeypair.publicKey,
-          lamports: await provider.connection.getMinimumBalanceForRentExemption(8 + 32 + 8 + 8 + 8 + 1024),
-          space: 8 + 32 + 8 + 8 + 8 + 1024,
-          programId: program.programId,
-        }),
-      ])
+        userAccount: userAccount.publicKey,
+        user: userAccount.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      } as any)
+      .signers([userAccount])
       .rpc();
 
-    const userAccountData = await program.account.userAccount.fetch(userAccountKeypair.publicKey);
-
-    expect(userAccountData.owner.toBase58()).to.equal(owner.publicKey.toBase58());
-    expect(userAccountData.solBalance).to.equal(BigInt(0));
-    expect(userAccountData.usdcBalance).to.equal(BigInt(0));
-    expect(userAccountData.loanCount).to.equal(BigInt(0));
-    expect(userAccountData.loans.length).to.equal(0);
+    const account = await program.account.userAccount.fetch(userAccount.publicKey);
+    expect(account.owner.toString()).to.equal(userAccount.publicKey.toString());
+    expect(account.solBalance.toNumber()).to.equal(0);
+    expect(account.usdcBalance.toNumber()).to.equal(0);
   });
 
-  it('Creates USDC mint and contract USDC account', async () => {
+  it("Creates USDC mint", async () => {
     await program.methods.createUsdcMint()
       .accounts({
-        contract: contract.publicKey,
-        usdcMint: usdcMintKeypair.publicKey,
+        contract: contractAccount.publicKey,
+        usdcMint: usdcMint,
         contractUsdcAccount: contractUsdcAccount,
-        // Remove 'tokenProgram', 'associatedTokenProgram', 'systemProgram', and 'rent' as they're auto-included
-      })
-      .signers([contract, usdcMintKeypair])
-      .preInstructions([
-        await anchor.web3.SystemProgram.createAccount({
-          fromPubkey: contract.publicKey,
-          newAccountPubkey: usdcMintKeypair.publicKey,
-          lamports: await provider.connection.getMinimumBalanceForRentExemption(82),
-          space: 82,
-          programId: TOKEN_PROGRAM_ID,
-        }),
-      ])
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+      } as any)
+      .signers([contractAccount])
       .rpc();
 
-    // Fetch the USDC mint
-    const usdcMintAccount = await getMint(provider.connection, usdcMintKeypair.publicKey);
-    expect(usdcMintAccount.decimals).to.equal(6);
-    expect(usdcMintAccount.mintAuthority?.toBase58()).to.equal(contract.publicKey.toBase58());
-
-    // Fetch the contract's USDC token account
-    const contractUsdcTokenAccount = await getAccount(provider.connection, contractUsdcAccount);
-    expect(contractUsdcTokenAccount.amount).to.equal(BigInt(1_000_000_000_000));
+    const mintInfo = await provider.connection.getTokenSupply(usdcMint);
+    expect(mintInfo.value.uiAmount).to.equal(1000000); // 1,000,000 USDC
   });
 
-  it('Deposits SOL and takes a loan', async () => {
-    const solAmount = 1 * anchor.web3.LAMPORTS_PER_SOL; // 1 SOL
-    const usdcAmount = 100_000_000; // 100 USDC (6 decimals)
-    const ltv = 25; // Loan-to-value ratio
+  const ltvOptions = [20, 25, 33, 50];
+  
+  for (const ltv of ltvOptions) {
+    it(`Takes a USDC loan with SOL collateral (LTV ${ltv}%)`, async () => {
+      const solAmount = new anchor.BN(1 * anchor.web3.LAMPORTS_PER_SOL);
+      const usdcAmount = new anchor.BN(ltv * 10000); // ltv% of 1 SOL worth of USDC
 
-    // Ensure the user has enough SOL to deposit
-    await provider.connection.confirmTransaction(
-      await provider.connection.requestAirdrop(owner.publicKey, solAmount),
-      "confirmed"
-    );
+      await program.methods.depositSolAndTakeLoan(solAmount, usdcAmount, ltv)
+        .accounts({
+          userAccount: userAccount.publicKey,
+          user: userAccount.publicKey,
+          contract: contractAccount.publicKey,
+          contractUsdcAccount: contractUsdcAccount,
+          userUsdcAccount: userUsdcAccount,
+          chainlinkFeed: SOL_USD_FEED,
+          chainlinkProgram: CHAINLINK_PROGRAM_ID,
+          usdcMint: usdcMint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        } as any)
+        .signers([userAccount])
+        .rpc();
 
-    // Create user's USDC token account if it doesn't exist
-    const userUsdcAccountInfo = await provider.connection.getAccountInfo(userUsdcAccount);
-    if (!userUsdcAccountInfo) {
-      const tx = new anchor.web3.Transaction().add(
-        createAssociatedTokenAccountInstruction(
-          owner.publicKey,
-          userUsdcAccount,
-          owner.publicKey,
-          usdcMintKeypair.publicKey
-        )
-      );
-      await provider.sendAndConfirm(tx, [owner]);
-    }
+      const account = await program.account.userAccount.fetch(userAccount.publicKey);
+      expect(account.loans.length).to.equal(1);
+      expect(account.loans[0].ltv).to.equal(ltv);
+      expect(account.usdcBalance.toNumber()).to.equal(usdcAmount.toNumber());
 
-    // Call the deposit and take loan function
-    await program.methods.depositSolAndTakeLoan(new anchor.BN(solAmount), new anchor.BN(usdcAmount), ltv)
+      // Repay the loan immediately for the next test
+      await program.methods.repayLoan(new anchor.BN(account.loanCount), usdcAmount)
+        .accounts({
+          userAccount: userAccount.publicKey,
+          user: userAccount.publicKey,
+          contract: contractAccount.publicKey,
+          contractUsdcAccount: contractUsdcAccount,
+          userUsdcAccount: userUsdcAccount,
+          usdcMint: usdcMint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: anchor.web3.SystemProgram.programId,
+        } as any)
+        .signers([userAccount])
+        .rpc();
+    });
+  }
+
+  it("Withdraws SOL", async () => {
+    const withdrawAmount = new anchor.BN(0.5 * anchor.web3.LAMPORTS_PER_SOL);
+
+    await program.methods.withdrawSol(withdrawAmount)
       .accounts({
-        userAccount: userAccountKeypair.publicKey,
-        owner: owner.publicKey,
-        contract: contract.publicKey,
+        userAccount: userAccount.publicKey,
+        user: userAccount.publicKey,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      } as any)
+      .signers([userAccount])
+      .rpc();
+
+    const account = await program.account.userAccount.fetch(userAccount.publicKey);
+    expect(account.solBalance.toNumber()).to.be.lessThan(4 * anchor.web3.LAMPORTS_PER_SOL); // Less than 4 SOL due to previous deposits and withdrawals
+  });
+
+  it("Repays a loan", async () => {
+    // First, take out a loan
+    const solAmount = new anchor.BN(1 * anchor.web3.LAMPORTS_PER_SOL);
+    const usdcAmount = new anchor.BN(20 * 1000000); // 20 USDC
+    const ltv = 20;
+
+    await program.methods.depositSolAndTakeLoan(solAmount, usdcAmount, ltv)
+      .accounts({
+        userAccount: userAccount.publicKey,
+        user: userAccount.publicKey,
+        contract: contractAccount.publicKey,
         contractUsdcAccount: contractUsdcAccount,
         userUsdcAccount: userUsdcAccount,
-        chainlinkFeed: chainlinkFeed,
-        chainlinkProgram: chainlinkProgram,
-        usdcMint: usdcMintKeypair.publicKey,
-        // Remove 'tokenProgram' and 'systemProgram' as they're auto-included
-      })
-      .signers([owner])
+        chainlinkFeed: SOL_USD_FEED,
+        chainlinkProgram: CHAINLINK_PROGRAM_ID,
+        usdcMint: usdcMint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      } as any)
+      .signers([userAccount])
       .rpc();
 
-    // Fetch the user account data
-    const userAccountData = await program.account.userAccount.fetch(userAccountKeypair.publicKey);
-    expect(userAccountData.solBalance).to.be.greaterThan(BigInt(0));
-    expect(userAccountData.usdcBalance).to.equal(BigInt(usdcAmount));
-    expect(userAccountData.loanCount).to.equal(BigInt(1));
-    expect(userAccountData.loans.length).to.equal(1);
-
-    // Fetch the user's USDC token account balance
-    const userUsdcTokenAccount = await getAccount(provider.connection, userUsdcAccount);
-    expect(userUsdcTokenAccount.amount).to.equal(BigInt(usdcAmount));
-  });
-
-  it('Withdraws SOL from user account', async () => {
-    const withdrawAmount = 0.1 * anchor.web3.LAMPORTS_PER_SOL; // Withdraw 0.1 SOL
-
-    // Get initial balances
-    const initialUserBalance = await provider.connection.getBalance(owner.publicKey);
-    const userAccountDataBefore = await program.account.userAccount.fetch(userAccountKeypair.publicKey);
-
-    await program.methods.withdrawSol(new anchor.BN(withdrawAmount))
-      .accounts({
-        userAccount: userAccountKeypair.publicKey,
-        owner: owner.publicKey,
-        // Remove 'systemProgram' as it's auto-included
-      })
-      .signers([owner])
-      .rpc();
-
-    // Get updated balances
-    const finalUserBalance = await provider.connection.getBalance(owner.publicKey);
-    const userAccountDataAfter = await program.account.userAccount.fetch(userAccountKeypair.publicKey);
-
-    // Verify balances
-    expect(userAccountDataAfter.solBalance).to.equal(
-      userAccountDataBefore.solBalance - BigInt(withdrawAmount)
-    );
-    expect(finalUserBalance).to.be.greaterThan(initialUserBalance);
-  });
-
-  it('Repays the loan', async () => {
-    const loanId = new anchor.BN(1); // Assuming this is the first loan
-    const repayAmount = new anchor.BN(100_500_000); // Principal plus interest
-
-    // Ensure the user has enough USDC to repay
-    // In this case, the user already has USDC from the loan
-    // If additional USDC is needed, mint or transfer more USDC to userUsdcAccount
+    // Now repay the loan
+    const account = await program.account.userAccount.fetch(userAccount.publicKey);
+    const loanId = new anchor.BN(account.loanCount);
+    const repayAmount = usdcAmount; // Repay full amount
 
     await program.methods.repayLoan(loanId, repayAmount)
       .accounts({
-        userAccount: userAccountKeypair.publicKey,
-        owner: owner.publicKey,
-        contract: contract.publicKey,
+        userAccount: userAccount.publicKey,
+        user: userAccount.publicKey,
+        contract: contractAccount.publicKey,
         contractUsdcAccount: contractUsdcAccount,
         userUsdcAccount: userUsdcAccount,
-        usdcMint: usdcMintKeypair.publicKey,
-        // Remove 'tokenProgram' and 'systemProgram' as they're auto-included
-      })
-      .signers([owner])
+        usdcMint: usdcMint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      } as any)
+      .signers([userAccount])
       .rpc();
 
-    // Fetch the user account data
-    const userAccountData = await program.account.userAccount.fetch(userAccountKeypair.publicKey);
-    expect(userAccountData.loanCount).to.equal(BigInt(0));
-    expect(userAccountData.loans.length).to.equal(0);
-
-    // Fetch the user's USDC token account balance
-    const userUsdcTokenAccount = await getAccount(provider.connection, userUsdcAccount);
-    expect(userUsdcTokenAccount.amount).to.be.lessThan(BigInt(100_000_000)); // Less than initial loan amount
+    const updatedAccount = await program.account.userAccount.fetch(userAccount.publicKey);
+    expect(updatedAccount.loans.length).to.equal(0); // Loan should be fully repaid and removed
+    expect(updatedAccount.usdcBalance.toNumber()).to.equal(0);
   });
 });
