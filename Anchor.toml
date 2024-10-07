@@ -17,7 +17,7 @@ url = "https://anchor.projectserum.com" # Default Anchor registry
 
 [provider]
 cluster = "devnet"
-wallet = "~/Users/ahmadkhan/Users/ahmadkhan/Users/ahmadkhan/.config/solana/id.json"
+wallet = "~/Users/ahmadkhan/.config/solana/id.json"
 
 [scripts]
 test = "yarn ts-mocha -p tsconfig.json tests/**/*.ts"
