@@ -3,19 +3,19 @@ seeds = false
 skip-lint = false
 
 [programs.localnet]
-sol_savings = "HamacCCe7hLEBqMKcRebMCTdATkQSUtRpE2xkHc236gZ"
+sol_savings = "BShdVK2TQLHZV8CZPhkdXteRFb57H3Q5GJDmf36C2NHH"
 
 [programs.devnet]
-sol_savings = "HamacCCe7hLEBqMKcRebMCTdATkQSUtRpE2xkHc236gZ"
+sol_savings = "BShdVK2TQLHZV8CZPhkdXteRFb57H3Q5GJDmf36C2NHH"
 
 [programs.mainnet]
-sol_savings = "HamacCCe7hLEBqMKcRebMCTdATkQSUtRpE2xkHc236gZ"
+sol_savings = "BShdVK2TQLHZV8CZPhkdXteRFb57H3Q5GJDmf36C2NHH"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "devnet"
+cluster = "localnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

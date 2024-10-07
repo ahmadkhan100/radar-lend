@@ -3,7 +3,7 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount};
 use anchor_spl::associated_token::AssociatedToken;
 use chainlink_solana as chainlink;
 
-declare_id!("HamacCCe7hLEBqMKcRebMCTdATkQSUtRpE2xkHc236gZ");
+declare_id!("BShdVK2TQLHZV8CZPhkdXteRFb57H3Q5GJDmf36C2NHH");
 
 const INITIAL_USDC_SUPPLY: u64 = 1_000_000_000_000; // 1,000,000 USDC (6 decimals)
 const SECONDS_IN_A_YEAR: u64 = 31_536_000; // 365 days in seconds
