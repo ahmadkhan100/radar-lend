@@ -3,7 +3,7 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount};
 use anchor_spl::associated_token::AssociatedToken;
 use chainlink_solana as chainlink;
 
-declare_id!("BShdVK2TQLHZV8CZPhkdXteRFb57H3Q5GJDmf36C2NHH");
+declare_id!("AL2pejr3LLKAiE47G64Br3XprkyrmymLzMQiqZMhQVoa");
 
 const INITIAL_USDC_SUPPLY: u64 = 1_000_000_000_000; // 1,000,000 USDC (6 decimals)
 const SECONDS_IN_A_YEAR: u64 = 31_536_000; // 365 days in seconds
@@ -433,3 +433,4 @@ pub struct UsdcMintCreated {
     pub mint: Pubkey,
     pub supply: u64,
 }
+

@@ -4,20 +4,20 @@ skip-lint = false
 idl-build = ["anchor-spl/idl-build"]
 
 [programs.localnet]
-sol_savings = "3e4U8VDi5ctePpTNErDURm24g5G2Rj9kWGLVco6Rx1ex"
+sol_savings = "AL2pejr3LLKAiE47G64Br3XprkyrmymLzMQiqZMhQVoa"
 
 [programs.devnet]
-sol_savings = "3e4U8VDi5ctePpTNErDURm24g5G2Rj9kWGLVco6Rx1ex"
+sol_savings = "AL2pejr3LLKAiE47G64Br3XprkyrmymLzMQiqZMhQVoa"
 
 [programs.mainnet]
-sol_savings = "3e4U8VDi5ctePpTNErDURm24g5G2Rj9kWGLVco6Rx1ex"
+sol_savings = "AL2pejr3LLKAiE47G64Br3XprkyrmymLzMQiqZMhQVoa"
 
 [registry]
 url = "https://anchor.projectserum.com" # Default Anchor registry
 
 [provider]
 cluster = "localnet"
-wallet = "~/.config/solana/id.json"
+wallet = "~/Users/ahmadkhan/.config/solana/id.json"
 
 [scripts]
 test = "yarn ts-mocha -p tsconfig.json tests/**/*.ts"

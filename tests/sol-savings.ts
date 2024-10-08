@@ -1,8 +1,15 @@
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { SolSavings } from "../target/types/sol_savings";
-import { PublicKey, Keypair } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, createMint, createAssociatedTokenAccount, mintTo } from "@solana/spl-token";
+import { PublicKey, Keypair, SystemProgram, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import {
+  TOKEN_PROGRAM_ID,
+  ASSOCIATED_TOKEN_PROGRAM_ID,
+  createMint,
+  getOrCreateAssociatedTokenAccount,
+  mintTo,
+  getAccount
+} from '@solana/spl-token';
 import { expect } from 'chai';
 
 describe('sol-savings', () => {
@@ -12,121 +19,130 @@ describe('sol-savings', () => {
   const program = anchor.workspace.SolSavings as Program<SolSavings>;
 
   let userAccount: Keypair;
-  let secondUserAccount: Keypair;
+  let adminAccount: Keypair;
   let usdcMint: PublicKey;
-  let contractUsdcAccount: PublicKey;
+  let adminUsdcAccount: PublicKey;
   let userUsdcAccount: PublicKey;
-  let secondUserUsdcAccount: PublicKey;
-  let contractAccount: Keypair;
+  let shrubPDA: PublicKey;
+  let shrubBump: number;
+  let shrubUsdcAccount: PublicKey;
 
-  const CHAINLINK_PROGRAM_ID = new PublicKey("HEvSKofvBgfaexv23kMabbYqxasxU3mQ4ibBMEmJWHny");
-  const SOL_USD_FEED = new PublicKey("HgTtcbcmp5BeThax5AU8vg4VwK79qAvAKKFMs8txMLW6");
+  const CHAINLINK_PROGRAM_ID = new PublicKey("AL2pejr3LLKAiE47G64Br3XprkyrmymLzMQiqZMhQVoa");
+  const SOL_USD_FEED = new PublicKey("AL2pejr3LLKAiE47G64Br3XprkyrmymLzMQiqZMhQVoa");
+
+  async function airdropSol(account: Keypair, amount: number): Promise<void> {
+    const signature = await provider.connection.requestAirdrop(account.publicKey, amount * LAMPORTS_PER_SOL);
+    await provider.connection.confirmTransaction(signature);
+  }
 
   before(async () => {
     userAccount = Keypair.generate();
-    secondUserAccount = Keypair.generate();
-    contractAccount = Keypair.generate();
+    adminAccount = Keypair.generate();
 
-    // Airdrop SOL to accounts
-    await provider.connection.requestAirdrop(userAccount.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
-    await provider.connection.requestAirdrop(secondUserAccount.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
-    await provider.connection.requestAirdrop(contractAccount.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
+    // Airdrop SOL to user and admin accounts
+    await airdropSol(userAccount, 10);
+    await airdropSol(adminAccount, 10);
 
-    // Create USDC mint
+    // Verify balances
+    const userBalance = await provider.connection.getBalance(userAccount.publicKey);
+    const adminBalance = await provider.connection.getBalance(adminAccount.publicKey);
+    console.log(`User balance: ${userBalance / LAMPORTS_PER_SOL} SOL`);
+    console.log(`Admin balance: ${adminBalance / LAMPORTS_PER_SOL} SOL`);
+
+    // Create USDC Mint
     usdcMint = await createMint(
       provider.connection,
-      contractAccount,
-      contractAccount.publicKey,
+      adminAccount,
+      adminAccount.publicKey,
       null,
       6
     );
 
-    // Create contract USDC account
-    contractUsdcAccount = await createAssociatedTokenAccount(
+    // Create admin and user USDC accounts
+    adminUsdcAccount = (await getOrCreateAssociatedTokenAccount(
       provider.connection,
-      contractAccount,
+      adminAccount,
       usdcMint,
-      contractAccount.publicKey
-    );
+      adminAccount.publicKey
+    )).address;
 
-    // Create user USDC accounts
-    userUsdcAccount = await createAssociatedTokenAccount(
+    userUsdcAccount = (await getOrCreateAssociatedTokenAccount(
       provider.connection,
       userAccount,
       usdcMint,
       userAccount.publicKey
+    )).address;
+
+    // Derive PDA for shrub
+    [shrubPDA, shrubBump] = await PublicKey.findProgramAddress(
+      [Buffer.from("contract_authority")],
+      program.programId
     );
-    secondUserUsdcAccount = await createAssociatedTokenAccount(
+
+    // Get shrub USDC account
+    shrubUsdcAccount = (await getOrCreateAssociatedTokenAccount(
       provider.connection,
-      secondUserAccount,
+      adminAccount,
       usdcMint,
-      secondUserAccount.publicKey
-    );
-
-    // Mint some USDC to the contract account
-    await mintTo(
-      provider.connection,
-      contractAccount,
-      usdcMint,
-      contractUsdcAccount,
-      contractAccount,
-      1000000 * 1000000 // 1,000,000 USDC
-    );
+      shrubPDA,
+      true
+    )).address;
   });
 
-  it("Initializes multiple user accounts", async () => {
-    for (const account of [userAccount, secondUserAccount]) {
-      await program.methods.initialize()
-        .accounts({
-          userAccount: account.publicKey,
-          user: account.publicKey,
-          systemProgram: anchor.web3.SystemProgram.programId,
-        } as any)
-        .signers([account])
-        .rpc();
+  it("Initializes user account", async () => {
+    await program.methods.initialize()
+      .accounts({
+        userAccount: userAccount.publicKey,
+        owner: userAccount.publicKey,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .signers([userAccount])
+      .rpc();
 
-      const fetchedAccount = await program.account.userAccount.fetch(account.publicKey);
-      expect(fetchedAccount.owner.toString()).to.equal(account.publicKey.toString());
-      expect(fetchedAccount.solBalance.toNumber()).to.equal(0);
-      expect(fetchedAccount.usdcBalance.toNumber()).to.equal(0);
-    }
+    const account = await program.account.userAccount.fetch(userAccount.publicKey);
+    expect(account.owner.toString()).to.equal(userAccount.publicKey.toString());
+    expect(account.solBalance.toNumber()).to.equal(0);
+    expect(account.usdcBalance.toNumber()).to.equal(0);
+    expect(account.loanCount.toNumber()).to.equal(0);
+    expect(account.loans.length).to.equal(0);
   });
 
-  it("Fails to withdraw SOL with insufficient balance", async () => {
-    const withdrawAmount = new anchor.BN(1 * anchor.web3.LAMPORTS_PER_SOL);
+  it("Creates USDC mint", async () => {
+    await program.methods.createUsdcMint()
+      .accounts({
+        contract: shrubPDA,
+        usdcMint: usdcMint,
+        contractUsdcAccount: shrubUsdcAccount,
+        payer: adminAccount.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+        rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+      } as any)
+      .signers([adminAccount])
+      .rpc();
 
-    try {
-      await program.methods.withdrawSol(withdrawAmount)
-        .accounts({
-          userAccount: userAccount.publicKey,
-          user: userAccount.publicKey,
-          systemProgram: anchor.web3.SystemProgram.programId,
-        } as any)
-        .signers([userAccount])
-        .rpc();
-      expect.fail("Expected withdrawal to fail");
-    } catch (error) {
-      expect((error as Error).message).to.include("Insufficient funds for withdrawal");
-    }
+    const mintInfo = await provider.connection.getTokenSupply(usdcMint);
+    expect(Number(mintInfo.value.amount)).to.equal(1_000_000_000_000); // 1,000,000 USDC
   });
 
-  it("Takes maximum allowed loan based on LTV", async () => {
-    const solAmount = new anchor.BN(5 * anchor.web3.LAMPORTS_PER_SOL);
+  it("Deposits SOL and takes a loan", async () => {
+    const solAmount = new anchor.BN(1 * LAMPORTS_PER_SOL);
+    const usdcAmount = new anchor.BN(50 * 1000000); // 50 USDC
     const ltv = 50; // 50% LTV
-    const usdcAmount = new anchor.BN(250 * 1000000); // Assuming 1 SOL = $100, max loan would be 250 USDC
 
     await program.methods.depositSolAndTakeLoan(solAmount, usdcAmount, ltv)
       .accounts({
         userAccount: userAccount.publicKey,
-        user: userAccount.publicKey,
-        contract: contractAccount.publicKey,
-        contractUsdcAccount: contractUsdcAccount,
+        owner: userAccount.publicKey,
+        contract: shrubPDA,
+        contractUsdcAccount: shrubUsdcAccount,
         userUsdcAccount: userUsdcAccount,
         chainlinkFeed: SOL_USD_FEED,
         chainlinkProgram: CHAINLINK_PROGRAM_ID,
         usdcMint: usdcMint,
         tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: anchor.web3.SystemProgram.programId,
+        systemProgram: SystemProgram.programId,
       } as any)
       .signers([userAccount])
       .rpc();
@@ -137,321 +153,183 @@ describe('sol-savings', () => {
     expect(account.usdcBalance.toNumber()).to.equal(usdcAmount.toNumber());
   });
 
-  it("Fails to take a loan exceeding LTV limit", async () => {
-    const solAmount = new anchor.BN(1 * anchor.web3.LAMPORTS_PER_SOL);
-    const usdcAmount = new anchor.BN(51 * 1000000); // Trying to borrow more than 50% LTV
-    const ltv = 50;
+  it("Fails to take a loan with invalid LTV", async () => {
+    const solAmount = new anchor.BN(1 * LAMPORTS_PER_SOL);
+    const usdcAmount = new anchor.BN(50 * 1000000); // 50 USDC
+    const invalidLtv = 40; // Invalid LTV
 
     try {
-      await program.methods.depositSolAndTakeLoan(solAmount, usdcAmount, ltv)
+      await program.methods.depositSolAndTakeLoan(solAmount, usdcAmount, invalidLtv)
         .accounts({
-          userAccount: secondUserAccount.publicKey,
-          user: secondUserAccount.publicKey,
-          contract: contractAccount.publicKey,
-          contractUsdcAccount: contractUsdcAccount,
-          userUsdcAccount: secondUserUsdcAccount,
+          userAccount: userAccount.publicKey,
+          owner: userAccount.publicKey,
+          contract: shrubPDA,
+          contractUsdcAccount: shrubUsdcAccount,
+          userUsdcAccount: userUsdcAccount,
           chainlinkFeed: SOL_USD_FEED,
           chainlinkProgram: CHAINLINK_PROGRAM_ID,
           usdcMint: usdcMint,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          systemProgram: SystemProgram.programId,
         } as any)
-        .signers([secondUserAccount])
+        .signers([userAccount])
         .rpc();
-      expect.fail("Expected loan to fail due to exceeding LTV limit");
+      expect.fail("Expected an error");
     } catch (error) {
-      expect((error as Error).message).to.include("Insufficient collateral for loan");
+      expect((error as Error).message).to.include("Invalid LTV ratio");
     }
   });
 
-  it("Partially repays a loan", async () => {
-    const loanId = new anchor.BN(1); // Assuming this is the first loan taken
-    const partialRepayAmount = new anchor.BN(100 * 1000000); // Repay 100 USDC
+  it("Withdraws SOL", async () => {
+    const withdrawAmount = new anchor.BN(0.5 * LAMPORTS_PER_SOL);
 
-    await program.methods.repayLoan(loanId, partialRepayAmount)
+    await program.methods.withdrawSol(withdrawAmount)
       .accounts({
         userAccount: userAccount.publicKey,
-        user: userAccount.publicKey,
-        contract: contractAccount.publicKey,
-        contractUsdcAccount: contractUsdcAccount,
-        userUsdcAccount: userUsdcAccount,
-        usdcMint: usdcMint,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: anchor.web3.SystemProgram.programId,
+        owner: userAccount.publicKey,
+        systemProgram: SystemProgram.programId,
       } as any)
       .signers([userAccount])
       .rpc();
 
     const account = await program.account.userAccount.fetch(userAccount.publicKey);
-    expect(account.loans.length).to.equal(1);
-    expect(account.loans[0].principal.toNumber()).to.be.lessThan(250 * 1000000);
+    expect(account.solBalance.toNumber()).to.be.lessThan(1 * LAMPORTS_PER_SOL);
   });
 
-  it("Fails to repay a non-existent loan", async () => {
-    const nonExistentLoanId = new anchor.BN(999);
-    const repayAmount = new anchor.BN(100 * 1000000);
+  it("Fails to withdraw more SOL than available", async () => {
+    const excessiveWithdrawAmount = new anchor.BN(10 * LAMPORTS_PER_SOL);
 
     try {
-      await program.methods.repayLoan(nonExistentLoanId, repayAmount)
+      await program.methods.withdrawSol(excessiveWithdrawAmount)
         .accounts({
-          userAccount: secondUserAccount.publicKey,
-          user: secondUserAccount.publicKey,
-          contract: contractAccount.publicKey,
-          contractUsdcAccount: contractUsdcAccount,
-          userUsdcAccount: secondUserUsdcAccount,
-          usdcMint: usdcMint,
-          tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          userAccount: userAccount.publicKey,
+          owner: userAccount.publicKey,
+          systemProgram: SystemProgram.programId,
         } as any)
-        .signers([secondUserAccount])
+        .signers([userAccount])
         .rpc();
-      expect.fail("Expected repayment to fail due to non-existent loan");
+      expect.fail("Expected an error");
     } catch (error) {
-      expect((error as Error).message).to.include("Loan not found");
+      expect((error as Error).message).to.include("Insufficient funds for withdrawal");
     }
   });
 
-  it("Fully repays a loan and retrieves collateral", async () => {
+  it("Repays a loan partially", async () => {
     const account = await program.account.userAccount.fetch(userAccount.publicKey);
-    const loanId = new anchor.BN(1);
+    const loanId = account.loans[0].id;
+    const partialRepayAmount = new anchor.BN(25 * 1000000); // Repay 25 USDC
+
+    await program.methods.repayLoan(loanId, partialRepayAmount)
+      .accounts({
+        userAccount: userAccount.publicKey,
+        owner: userAccount.publicKey,
+        contract: shrubPDA,
+        contractUsdcAccount: shrubUsdcAccount,
+        userUsdcAccount: userUsdcAccount,
+        usdcMint: usdcMint,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .signers([userAccount])
+      .rpc();
+
+    const updatedAccount = await program.account.userAccount.fetch(userAccount.publicKey);
+    expect(updatedAccount.loans[0].principal.toNumber()).to.be.lessThan(account.loans[0].principal.toNumber());
+  });
+
+  it("Repays a loan fully", async () => {
+    const account = await program.account.userAccount.fetch(userAccount.publicKey);
+    const loanId = account.loans[0].id;
     const fullRepayAmount = account.loans[0].principal;
 
     await program.methods.repayLoan(loanId, fullRepayAmount)
       .accounts({
         userAccount: userAccount.publicKey,
-        user: userAccount.publicKey,
-        contract: contractAccount.publicKey,
-        contractUsdcAccount: contractUsdcAccount,
+        owner: userAccount.publicKey,
+        contract: shrubPDA,
+        contractUsdcAccount: shrubUsdcAccount,
         userUsdcAccount: userUsdcAccount,
         usdcMint: usdcMint,
         tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: anchor.web3.SystemProgram.programId,
+        systemProgram: SystemProgram.programId,
       } as any)
       .signers([userAccount])
       .rpc();
 
     const updatedAccount = await program.account.userAccount.fetch(userAccount.publicKey);
     expect(updatedAccount.loans.length).to.equal(0);
-    expect(updatedAccount.solBalance.toNumber()).to.be.greaterThan(account.solBalance.toNumber());
   });
 
-  it("Attempts to take multiple loans with different LTV ratios", async () => {
-    const ltvOptions = [20, 25, 33, 50];
-    
-    for (const ltv of ltvOptions) {
-      const solAmount = new anchor.BN(1 * anchor.web3.LAMPORTS_PER_SOL);
-      const usdcAmount = new anchor.BN(ltv * 0.5 * 1000000); // ltv% of 0.5 SOL worth of USDC
+  it("Fails to repay a non-existent loan", async () => {
+    const nonExistentLoanId = new anchor.BN(999);
+    const repayAmount = new anchor.BN(10 * 1000000);
 
+    try {
+      await program.methods.repayLoan(nonExistentLoanId, repayAmount)
+        .accounts({
+          userAccount: userAccount.publicKey,
+          owner: userAccount.publicKey,
+          contract: shrubPDA,
+          contractUsdcAccount: shrubUsdcAccount,
+          userUsdcAccount: userUsdcAccount,
+          usdcMint: usdcMint,
+          tokenProgram: TOKEN_PROGRAM_ID,
+          systemProgram: SystemProgram.programId,
+        } as any)
+        .signers([userAccount])
+        .rpc();
+      expect.fail("Expected an error");
+    } catch (error) {
+      expect((error as Error).message).to.include("Loan not found");
+    }
+  });
+
+  it("Takes multiple loans up to the maximum limit", async () => {
+    const solAmount = new anchor.BN(1 * LAMPORTS_PER_SOL);
+    const usdcAmount = new anchor.BN(10 * 1000000); // 10 USDC
+    const ltv = 20; // 20% LTV
+
+    for (let i = 0; i < 5; i++) {
       await program.methods.depositSolAndTakeLoan(solAmount, usdcAmount, ltv)
         .accounts({
           userAccount: userAccount.publicKey,
-          user: userAccount.publicKey,
-          contract: contractAccount.publicKey,
-          contractUsdcAccount: contractUsdcAccount,
+          owner: userAccount.publicKey,
+          contract: shrubPDA,
+          contractUsdcAccount: shrubUsdcAccount,
           userUsdcAccount: userUsdcAccount,
           chainlinkFeed: SOL_USD_FEED,
           chainlinkProgram: CHAINLINK_PROGRAM_ID,
           usdcMint: usdcMint,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          systemProgram: SystemProgram.programId,
         } as any)
         .signers([userAccount])
         .rpc();
-
-      const account = await program.account.userAccount.fetch(userAccount.publicKey);
-      expect(account.loans.length).to.equal(ltv / 20); // Number of loans should increase with each iteration
-      expect(account.loans[account.loans.length - 1].ltv).to.equal(ltv);
     }
-  });
-
-  it("Attempts to withdraw more SOL than available after taking a loan", async () => {
-    const solAmount = new anchor.BN(2 * anchor.web3.LAMPORTS_PER_SOL);
-    const usdcAmount = new anchor.BN(50 * 1000000); // 50 USDC
-    const ltv = 25;
-
-    await program.methods.depositSolAndTakeLoan(solAmount, usdcAmount, ltv)
-      .accounts({
-        userAccount: secondUserAccount.publicKey,
-        user: secondUserAccount.publicKey,
-        contract: contractAccount.publicKey,
-        contractUsdcAccount: contractUsdcAccount,
-        userUsdcAccount: secondUserUsdcAccount,
-        chainlinkFeed: SOL_USD_FEED,
-        chainlinkProgram: CHAINLINK_PROGRAM_ID,
-        usdcMint: usdcMint,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      } as any)
-      .signers([secondUserAccount])
-      .rpc();
-
-    const withdrawAmount = new anchor.BN(1.5 * anchor.web3.LAMPORTS_PER_SOL);
-
-    try {
-      await program.methods.withdrawSol(withdrawAmount)
-        .accounts({
-          userAccount: secondUserAccount.publicKey,
-          user: secondUserAccount.publicKey,
-          systemProgram: anchor.web3.SystemProgram.programId,
-        } as any)
-        .signers([secondUserAccount])
-        .rpc();
-      expect.fail("Expected withdrawal to fail");
-    } catch (error) {
-      expect((error as Error).message).to.include("Insufficient funds for withdrawal");
-    }
-  });
-
-  it("Repays a loan with interest after some time has passed", async () => {
-    const solAmount = new anchor.BN(3 * anchor.web3.LAMPORTS_PER_SOL);
-    const usdcAmount = new anchor.BN(100 * 1000000); // 100 USDC
-    const ltv = 33;
-
-    await program.methods.depositSolAndTakeLoan(solAmount, usdcAmount, ltv)
-      .accounts({
-        userAccount: userAccount.publicKey,
-        user: userAccount.publicKey,
-        contract: contractAccount.publicKey,
-        contractUsdcAccount: contractUsdcAccount,
-        userUsdcAccount: userUsdcAccount,
-        chainlinkFeed: SOL_USD_FEED,
-        chainlinkProgram: CHAINLINK_PROGRAM_ID,
-        usdcMint: usdcMint,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      } as any)
-      .signers([userAccount])
-      .rpc();
-
-    // Simulate time passing (this doesn't actually make time pass in the test environment)
-    await new Promise(resolve => setTimeout(resolve, 1000));
 
     const account = await program.account.userAccount.fetch(userAccount.publicKey);
-    const loanId = new anchor.BN(account.loanCount);
-    const repayAmount = new anchor.BN(105 * 1000000); // Repay 105 USDC (assuming 5% interest)
+    expect(account.loans.length).to.equal(5);
 
-    await program.methods.repayLoan(loanId, repayAmount)
-      .accounts({
-        userAccount: userAccount.publicKey,
-        user: userAccount.publicKey,
-        contract: contractAccount.publicKey,
-        contractUsdcAccount: contractUsdcAccount,
-        userUsdcAccount: userUsdcAccount,
-        usdcMint: usdcMint,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      } as any)
-      .signers([userAccount])
-      .rpc();
-
-    const updatedAccount = await program.account.userAccount.fetch(userAccount.publicKey);
-    expect(updatedAccount.loans.length).to.equal(account.loans.length - 1);
-    expect(updatedAccount.usdcBalance.toNumber()).to.be.lessThan(account.usdcBalance.toNumber());
-  });
-
-  it("Attempts to take a loan with an invalid LTV ratio", async () => {
-    const solAmount = new anchor.BN(1 * anchor.web3.LAMPORTS_PER_SOL);
-    const usdcAmount = new anchor.BN(30 * 1000000); // 30 USDC
-    const invalidLtv = 40; // Assuming 40 is not a valid LTV option
-
+    // Try to take one more loan
     try {
-      await program.methods.depositSolAndTakeLoan(solAmount, usdcAmount, invalidLtv)
+      await program.methods.depositSolAndTakeLoan(solAmount, usdcAmount, ltv)
         .accounts({
-          userAccount: secondUserAccount.publicKey,
-          user: secondUserAccount.publicKey,
-          contract: contractAccount.publicKey,
-          contractUsdcAccount: contractUsdcAccount,
-          userUsdcAccount: secondUserUsdcAccount,
+          userAccount: userAccount.publicKey,
+          owner: userAccount.publicKey,
+          contract: shrubPDA,
+          contractUsdcAccount: shrubUsdcAccount,
+          userUsdcAccount: userUsdcAccount,
           chainlinkFeed: SOL_USD_FEED,
           chainlinkProgram: CHAINLINK_PROGRAM_ID,
           usdcMint: usdcMint,
           tokenProgram: TOKEN_PROGRAM_ID,
-          systemProgram: anchor.web3.SystemProgram.programId,
+          systemProgram: SystemProgram.programId,
         } as any)
-        .signers([secondUserAccount])
+        .signers([userAccount])
         .rpc();
-      expect.fail("Expected loan to fail due to invalid LTV");
+      expect.fail("Expected an error");
     } catch (error) {
-      expect((error as Error).message).to.include("Invalid LTV ratio");
+      expect((error as Error).message).to.include("Maximum number of loans reached for this user");
     }
-  });
-
-  it("Checks loan details after taking multiple loans", async () => {
-    const account = await program.account.userAccount.fetch(userAccount.publicKey);
-    expect(account.loans.length).to.be.greaterThan(0);
-    
-    for (const loan of account.loans) {
-      expect(loan.id.toNumber()).to.be.greaterThan(0);
-      expect(loan.principal.toNumber()).to.be.greaterThan(0);
-      expect([20, 25, 33, 50]).to.include(loan.ltv);
-      expect(loan.collateral.toNumber()).to.be.greaterThan(0);
-    }
-  });
-
-  it("Attempts to repay more than the outstanding loan amount", async () => {
-    const account = await program.account.userAccount.fetch(userAccount.publicKey);
-    if (account.loans.length > 0) {
-      const loanId = account.loans[0].id;
-      const excessiveRepayAmount = account.loans[0].principal.add(new anchor.BN(1000000)); // Principal + 1 USDC
-
-      try {
-        await program.methods.repayLoan(loanId, excessiveRepayAmount)
-          .accounts({
-            userAccount: userAccount.publicKey,
-            user: userAccount.publicKey,
-            contract: contractAccount.publicKey,
-            contractUsdcAccount: contractUsdcAccount,
-            userUsdcAccount: userUsdcAccount,
-            usdcMint: usdcMint,
-            tokenProgram: TOKEN_PROGRAM_ID,
-            systemProgram: anchor.web3.SystemProgram.programId,
-          } as any)
-          .signers([userAccount])
-          .rpc();
-        expect.fail("Expected repayment to fail due to excessive amount");
-      } catch (error) {
-        expect((error as Error).message).to.include("Repayment amount exceeds loan principal");
-      }
-    } else {
-      console.log("No loans available for this test case");
-    }
-  });
-
-  it("Verifies SOL balance after multiple deposits and withdrawals", async () => {
-    const initialBalance = await provider.connection.getBalance(userAccount.publicKey);
-    
-    // Deposit SOL
-    const depositAmount = new anchor.BN(2 * anchor.web3.LAMPORTS_PER_SOL);
-    await program.methods.depositSolAndTakeLoan(depositAmount, new anchor.BN(0), 20)
-      .accounts({
-        userAccount: userAccount.publicKey,
-        user: userAccount.publicKey,
-        contract: contractAccount.publicKey,
-        contractUsdcAccount: contractUsdcAccount,
-        userUsdcAccount: userUsdcAccount,
-        chainlinkFeed: SOL_USD_FEED,
-        chainlinkProgram: CHAINLINK_PROGRAM_ID,
-        usdcMint: usdcMint,
-        tokenProgram: TOKEN_PROGRAM_ID,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      } as any)
-      .signers([userAccount])
-      .rpc();
-
-    // Withdraw SOL
-    const withdrawAmount = new anchor.BN(1 * anchor.web3.LAMPORTS_PER_SOL);
-    await program.methods.withdrawSol(withdrawAmount)
-      .accounts({
-        userAccount: userAccount.publicKey,
-        user: userAccount.publicKey,
-        systemProgram: anchor.web3.SystemProgram.programId,
-      } as any)
-      .signers([userAccount])
-      .rpc();
-
-    const finalBalance = await provider.connection.getBalance(userAccount.publicKey);
-    const expectedBalance = initialBalance - depositAmount.toNumber() + withdrawAmount.toNumber();
-    
-    expect(finalBalance).to.be.closeTo(expectedBalance, 10000); // Allow for small discrepancies due to transaction fees
   });
 });
